@@ -16,29 +16,6 @@ close all
 %  "Holzapfel-Ogden_ACTIVE") -- distinct from the original untouched
 %  passive plugin's "Holzapfel_Ogden" string, to avoid a registration
 %  collision between the two plugins.)
-%
-%  *** ACTIVE-PARAMETER STATUS ***: FEBio 4.9.0 crashes (heap corruption /
-%  access violation) when this plugin class registers more than its
-%  original 12 passive parameters via ADD_PARAMETER, once ANY of the
-%  active-contraction parameters (Tmax/Ca0/beta/l0/refl/ascl) are actually
-%  given values in the .feb file -- confirmed true for every one of them
-%  individually. Currently ONLY "refl" is being sent through as a live
-%  test of this boundary; Tmax/Ca0/beta/l0/ascl remain commented out below.
-%  The two-class hardcoded-constants workaround (LoBeta/HiBeta, see
-%  Holzapfel-Ogden_ActiveLoBeta.h/.cpp and Holzapfel-Ogden_ActiveHiBeta.h/.cpp
-%  in this same output folder) is set aside for now, not deleted -- we can
-%  come back to it.
-%
-%  Plugin parameters (flat, no nested wrapper, NO fiber tag -- orientation
-%  comes purely from mat_axis, same as the original passive plugin):
-%    a, b, af, bf, as, bs, afs, bfs, asn, bsn, anf, bnf   -- passive HO terms
-%    Tmax, Ca0, beta, l0, refl, ascl                       -- active terms
-%
-%  TODO: a_mat_LV/RV/S, b_mat_LV/RV/S, af_mat_LV/RV/S, bf_mat_LV/RV/S,
-%  as_mat_LV/RV/S, bs_mat_LV/RV/S below are PLACEHOLDER values (all 0) --
-%  replace with your actual passive script's real numbers before trusting
-%  any results from this file. The script will run with zeros, but the
-%  passive response will be physically meaningless until these are set.
 % ========================================================================
 addpath(genpath('C:\Program Files\MATLAB\R2025a'))
 gibbonRoot = 'C:\Users\kmagi\Downloads\GIBBON-Master';
@@ -51,115 +28,10 @@ savePath = 'C:\Users\kmagi\Downloads\FeBio';
 ratname  = 'Z210W0';
 
 %% ---- Solver settings ----
-% opt_iter raised from 15 to 25: at 15, FEBio's auto time-stepper treated
-% the ~20-22 iterations/step typical during active contraction as "too
-% many" and refused to grow the step size back up after cutting to dtmin,
-% pinning the solver at the smallest possible step for the whole active
-% ramp and ballooning runtime. 25 lets it recognize those as acceptable.
-% Timeline SHIFTED: previously sim-time spanned [0,1] with both load
-% curves held flat at 0 over [0,0.3] (a diastolic-filling/dead lead-in
-% before contraction onset). That dead region made the solver try to
-% "converge" steps with an already-near-zero residual (~1e-20, floating
-% point noise) against a relative tolerance requiring it to shrink
-% further (rtol*INITIAL ~1e-23) -- mathematically impossible, so it
-% burned through all 25 stiffness reformations without ever satisfying
-% the criterion. Fix: drop the dead region entirely and start the FEBio
-% time domain AT contraction onset (old t=0.3 -> new t=0, old t=1.0 ->
-% new t=0.7). Load curves below are shifted accordingly. Step count
-% reduced proportionally (63 = round(90*0.7)) to keep the same dt
-% resolution as before.
-% RESOLUTION TIGHTENED after the first shifted-timeline attempt still
-% diverged (negative jacobians) on step 1 even after 6 retries down to
-% dt~0.0016. Cause: dropping the dead lead-in also compressed the
-% pressure/calcium rise -- old ramp (0.3->0.6, duration 0.3) took ~27
-% steps at dt=1/90; new ramp (0->0.1167, duration 0.1167) took only
-% ~10-11 steps at the same dt, i.e. ~2.5x larger load increment per
-% step right at the most nonlinear part of the cycle, and max_retries=6
-% wasn't enough halvings to reach a small enough dt before giving up.
-% Fix: use a finer base step (baseDt/3) as BOTH the initial step size
-% and the dtmax ceiling, so the solver starts fine enough through the
-% steep early ramp without relying on retries to get there, and bump
-% max_retries up so it still has room to cut further if needed.
-% STEP COUNT: the earlier fineDt=(1/90)/3 tightening (~189 steps) was
-% only needed because, at the time, the pressure curve's rise was
-% compressed into just 0.1167 of the domain (matching calcium's fast
-% Guccione rise). Pressure now has its OWN shape again with a rise
-% duration of 0.3 -- the same rise duration used in the original working
-% run, which was stable at dtmax=1/90. So we can relax back to that
-% coarser resolution, cutting total steps roughly 3x (63 vs ~189).
-% Calcium's rise (0.1167) is still faster than pressure's, but calcium
-% only drives the internal active-tension term, not an external
-% mechanical load, so it's less likely to need the same fine ceiling --
-% if this reintroduces convergence trouble, fineDt is the first knob to
-% tighten back down.
-% simDuration SHORTENED 0.864 -> 0.45: the active model only needs to
-% reach ES (minimum volume), which occurs somewhere after pressure
-% finishes its rise (t=0.3) and while active tension is still
-% substantial (calcium is at ~0.33-0.83 of peak across t=0.3-0.4, per
-% the real-data curve) -- NOT the full 0.864 window out to where calcium
-% has nearly vanished. Running that far past ES was the direct cause of
-% the "expanding at the end" behavior: pressure holds at peak while
-% active tension fades to ~1% of peak by t=0.864, leaving nothing to
-% resist the still-full pressure. 0.45 gives comfortable margin past
-% pressure's full engagement (0.3) and past calcium's steepest decay,
-% while stopping well before the tension/pressure imbalance sets in.
-% The results section already scans every completed step for the true
-% volume minimum (ES), so this doesn't require knowing the exact ES
-% time in advance -- just needs to not run so far past it that the
-% unphysiological tail dominates the visualization.
-%
-% numTimeSteps stays tied to the passive model's step count (20, per
-% explicit request) rather than to a fixed dt -- so shortening
-% simDuration here automatically gives FINER per-step resolution
-% (baseDt=simDuration/20=0.0225 vs the old 0.0432), which should also
-% help the calcium-rise convergence risk noted before, not just cut
-% runtime.
-% DIAGNOSTIC (round 2) RESOLVED: the V_UZP_final + passive-script step-size
-% test converged to LV=492.2/RV=406.9 vs. the true ED target LV=543.2/
-% RV=395.8 (RV within 2.8%, LV within 9.4%) -- a reasonably close result,
-% not a failure. The earlier "764.3 is a huge overshoot" read was wrong:
-% that's V_UZP_final's own un-deformed volume (the starting point, not the
-% loaded result), and the FEBio pressure sign convention here is
-% "positive pressure = compressive" (confirmed in the FEBio manual) which
-% the fliplr'd surface normals combine with to make V_def -> smaller as
-% pressure ramps up -- exactly matching how the passive script's own
-% inverse iteration is set up. This is the same convention as the passive
-% model and is not being changed. Back to the real ED->ES active run on
-% V_ED_final.
-% SHORTENED 0.45 -> 0.2: with the pressure sign now genuinely inflating
-% (see F_LV_pressure/F_RV_pressure above), pressure holds at full systolic
-% magnitude from t=0.15 onward while calcium naturally decays after its
-% t=0.096s peak -- so tension progressively loses to a constant full
-% pressure and the chamber balloons out badly by t=0.45 (confirmed in the
-% volume-trajectory plot: LV up to ~1230, RV up to ~337). The true ES
-% minimum happens much earlier (LV ~t=0.06-0.07 at ~375, RV ~t=0.08-0.1 at
-% ~242), so 0.2 gives ~2x margin past both minima while stopping well
-% before the runaway inflation, which only really takes off past t~0.25.
 simDuration  = 0.2;
 numTimeSteps = 20;                 % matches the passive model's step count
 fineDt       = simDuration/numTimeSteps;   % = 0.01, finer resolution near ES
 baseDt       = fineDt;
-% max_retries raised 8 -> 16: the last attempt showed negative-jacobian
-% counts trending down as dt shrank (18169 -> ... -> 282) but never
-% reaching zero -- it hit max_retries and gave up at dt~0.0012, still
-% ~11x coarser than dtmin (fineDt/100 ~0.00011). This is a step-1-only
-% cost (only the very first, hardest step needs many halvings to find a
-% stable increment; once found, the auto-stepper remembers a working
-% size and subsequent steps won't need nearly as many retries), so it
-% shouldn't meaningfully hurt overall runtime.
-% REVERTED: the max_retries=24/dtmax=fineDt/2 change let the solver grind
-% through step 1's severe instability (negative-jacobian counts up to
-% 18010) by finding tiny enough substeps to nominally satisfy convergence
-% tolerance -- but FEBio's negative-jacobian check only catches a single
-% element inverting on itself, not two different (individually valid)
-% elements ending up in the same physical space. There's no self-contact
-% defined in this model, so nothing stops that. The resulting "solved"
-% run showed visibly overlapping/self-intersecting geometry, so this is
-% NOT an acceptable fix -- back to the pre-session settings that were
-% established as the empirically confirmed-stable baseline for Tmax=98
-% (max_retries=16, dtmax=fineDt, not fineDt/2). The underlying step-1
-% instability is still unresolved; forcing past it numerically isn't the
-% right approach.
 max_refs     = 25;
 max_ups      = 10;
 opt_iter     = 25;
@@ -172,7 +44,7 @@ pressureScale = 1;
 %% ---- Holzapfel-Ogden passive parameters (per region) ----
 % Real values pulled from the passive model's own console echo for this
 % same rat (Z210W0), so the active analysis is consistent with the ED
-% geometry it's built on top of.
+% geometry 
 a_mat_LV  = 0.186973;  b_mat_LV  = 4.80439;  af_mat_LV = 0.136467;  bf_mat_LV = 4.15537;  as_mat_LV = 1.33191;  bs_mat_LV = 3.334;
 a_mat_RV  = 0.336956;  b_mat_RV  = 5.68276;  af_mat_RV = 0.352679;  bf_mat_RV = 6;        as_mat_RV = 1.72124;  bs_mat_RV = 5.85127;
 a_mat_S   = 0.127484;  b_mat_S   = 8.49002;  af_mat_S  = 0.642743;  bf_mat_S  = 3.33202;  as_mat_S  = 1.41397;  bs_mat_S  = 5.2872;
@@ -212,19 +84,6 @@ l0    = 1.8;
 refl  = 2.20;
 
 %% ---- Pressure (mmHg -> kPa) ----
-% END-SYSTOLIC pressures (this curve ramps UP to peak systolic pressure,
-% not diastolic filling pressure) for this animal's W0 timepoint. RV ESP
-% confirmed directly at W0 (21.9 +/- 0.9 mmHg). LV ESP has no specific
-% published number yet -- using the 90-110 mmHg range midpoint (100) as
-% a placeholder; replace once you have the actual Fig. 2F value.
-% Previously this used the ED pressures [5.83 1.49] instead, left over
-% from before the ES targets were known.
-% CORRECTED SCOPE: back to true systolic afterload for the real ED->ES
-% active run on V_ED_final. With the pressure sign now genuinely
-% inflating (see F_LV_pressure/F_RV_pressure above), ramping toward this
-% systolic magnitude while Tmax contracts gives real afterload resistance
-% instead of the unopposed double-compression seen when this was
-% combined with V_UZP_final and the old compressive convention.
 Pressure_LVRV = [100.0  21.9];   % [LV, RV] mmHg, END-SYSTOLIC
 P_LV = Pressure_LVRV(1) * 0.133;
 P_RV = Pressure_LVRV(2) * 0.133;
@@ -267,33 +126,10 @@ fprintf('Regions: LV=%d  RV=%d  S=%d\n', numel(LV), numel(RV), numel(S));
 Fb = patchNormalFix(Fb);
 F_base_BC     = Fb(Cb==1,:);
 bcSupportList = unique(F_base_BC(:));
-% FLIPPED (fliplr removed) -- ACTIVE SCRIPT ONLY, passive script unchanged.
-% FEBio's pressure convention: "a positive pressure will act opposite to
-% the normal, so it will compress the material" (FEBio user manual,
-% Pressure Load section). The fliplr'd normal used previously (same as
-% the passive script) points AWAY from the cavity centroid, into the
-% tissue -- combined with that convention, positive pressure was
-% compressing/deflating the chamber instead of inflating it. With Tmax=98
-% active tension ALSO contracting the chamber, both effects pointed the
-% same direction with nothing providing outward resistance, which is what
-% crushed the LV to ~13 uL around t=0.3 in the last run. Removing fliplr
-% here (checked numerically: the raw, non-flipped face order points INTO
-% the cavity) makes positive pressure inflate instead, giving realistic
-% afterload resistance against active contraction. The passive script's
-% own fliplr'd surfaces and calibration are untouched.
 F_LV_pressure = patchNormalFix(Fb(Cb==3,:));
 F_RV_pressure = patchNormalFix(Fb(Cb==4,:));
 
 %% ---- Load ED (pressurized) reference geometry ----
-% CORRECTED SCOPE: the active model is contraction only (ED->ES) -- the
-% passive model already handles diastolic filling. V_ED_final is the
-% passive script's own properly-computed ED baseline, so the active model
-% starts there directly rather than re-deriving it from V_UZP_final. This
-% is now workable with the flipped (genuinely inflating) pressure
-% convention above: ramping pressure from ED up toward systolic while
-% Tmax contracts gives real opposing afterload resistance, instead of the
-% unopposed double-compression that crushed the LV when V_UZP_final was
-% combined with the old compressive convention.
 geomFile = fullfile(savePath, [ratname '_geomStates.mat']);
 if ~exist(geomFile,'file')
     error('Geometry file not found: %s\nRun the passive script first.', geomFile);
@@ -302,11 +138,6 @@ geomData = load(geomFile);
 V_def = geomData.V_ED_final;
 fprintf('Loaded ED (pressurized) reference geometry: %d nodes\n', size(V_def,1));
 
-% True ED target volumes, computed directly from the real imaged geometry
-% (V_MRI_ED) -- same definition the passive script's inverse iteration
-% used as its own convergence target. Used below to sanity-check the
-% volume trajectory against ground truth, not just against V_def's own
-% (potentially inconsistent) starting volume.
 ED_target_LV = closeAndVolume(F_LV_pressure, geomData.V_MRI_ED);
 ED_target_RV = closeAndVolume(F_RV_pressure, geomData.V_MRI_ED);
 fprintf('True ED target (from V_MRI_ED): LV=%.1f  RV=%.1f\n', ED_target_LV, ED_target_RV);
@@ -322,12 +153,6 @@ febio_spec.Control.solver.max_refs            = max_refs;
 febio_spec.Control.solver.qn_method.ATTR.type = 'Broyden';
 febio_spec.Control.solver.qn_method.max_ups   = max_ups;
 febio_spec.Control.solver.symmetric_stiffness = symmetric_stiffness;
-% Explicit convergence tolerances -- without these, FEBio's default relative
-% tolerance produced a "required" threshold that rounded to exactly zero
-% during the near-zero-load state at the very start of the simulation
-% (before the pressure/calcium curves ramp up), causing spurious
-% non-convergence failures even though the residual was already at the
-% floating-point noise floor.
 febio_spec.Control.solver.rtol  = 0.001;
 febio_spec.Control.solver.etol  = 0.01;
 febio_spec.Control.solver.dtol  = 0.001;
@@ -338,20 +163,6 @@ febio_spec.Control.time_stepper.max_retries = max_retries;
 febio_spec.Control.time_stepper.opt_iter    = opt_iter;
 
 %% ---- Materials: Holzapfel-Ogden_ACTIVE (custom plugin, single class) ----
-% Flat parameter list matching dllmain.cpp's BEGIN_FECORE_CLASS -- no
-% "fiber" tag (orientation comes from mat_axis below), no nested
-% "active_contraction" wrapper. Registered type string must exactly match
-% dllmain.cpp's REGISTER_FECORE_CLASS(HolzapfelMyocardiumActivePI,
-% "Holzapfel-Ogden_ACTIVE") string.
-%
-% *** STATUS: WORKING ***. All 6 active-contraction parameters
-% (Tmax/Ca0/beta/l0/refl/ascl) are live below -- the earlier suspected
-% ">12-parameter crash" turned out to actually be caused by the stale
-% build / type-string mismatches / missing k, not a hard parameter-count
-% limit. cbar()/DevTangent() now also includes the active-stress
-% contribution to the tangent (see cbar_with_active_tangent.cpp), which
-% meaningfully sped up convergence. k is required (base-class bulk
-% modulus) or FEBio errors with "K must be a positive number".
 materialName1 = 'Material1';
 febio_spec.Material.material{1}.ATTR.name = materialName1;
 febio_spec.Material.material{1}.ATTR.type = 'Holzapfel-Ogden_ACTIVE';
@@ -553,61 +364,6 @@ febio_spec.Loads.surface_load{2}.symmetric_stiffness = 0;
 %     contracts, then slowly expands" behavior, since pressure was
 %     fading out on calcium's slow 500ms decay tail instead of its own,
 %     faster relaxation-phase timing.
-%
-% SCOPE CORRECTION: this model simulates ED -> ES contraction only, not
-% a full contract-then-relax cycle -- relaxation/refilling belongs to
-% the *next* beat, which isn't part of this analysis. So LC_pressure
-% should never decay back down within this window: it rises through
-% isovolumic contraction and then HOLDS at peak (the heart "continues to
-% contract until the cycle continues again"), it does not fall back to
-% baseline here. LC_calcium keeps its natural literal decay (real
-% intracellular calcium kinetics decay within a beat regardless of
-% whether the tissue mechanically relaxes yet), so active tension will
-% be easing off near the end of the window even while pressure holds --
-% that's expected and fine, since we're not simulating far enough into
-% relaxation for it to matter; the ES state (minimum volume) is expected
-% to occur well before then, near/at the pressure plateau.
-%
-% LINEAR interpolation: SMOOTH previously caused a natural cubic spline
-% to overshoot into supposedly-flat regions because of a sparse,
-% far-away tail point combined with unevenly-spaced points near the
-% peak -- LINEAR guarantees no cross-region overshoot.
-%
-% CORRECTED SCOPE: this ramp represents ONLY active contraction
-% (isovolumic contraction + ejection), not passive filling -- most of the
-% ramp should cover the ED->systolic RISE, not filling from empty.
-% REVISED after a failed attempt: starting the curve AT the ED fraction
-% (instead of 0.0) caused a much worse step-1 failure (thousands of
-% negative jacobians even at t=0.0006) because FEBio always treats
-% V_ED_final as zero-stress (F=I) at t=0 -- jumping straight to a nonzero
-% load fraction there is an instantaneous step function for the solver to
-% resolve, harsher than ramping smoothly from true zero. Compromise: ramp
-% VERY quickly from 0 up to the ED fraction over just the first nominal
-% step (t=0.01, matching fineDt), keeping the solver's start smooth.
-%
-% RESHAPED (peak-then-decline, not peak-then-hold): real measured rat LV
-% pressure traces (Wang et al. 2017, Oncotarget 8:96161, Fig. 2a) show
-% pressure rising through isovolumic contraction to a peak near the start
-% of ejection, then GENTLY DECLINING through the rest of ejection -- it
-% does not hold flat until diastole. Holding at peak while calcium
-% naturally fades (its decay is a real kinetic process, not something we
-% control) let pressure "win" unopposed and balloon the chamber out past
-% ES. Mirroring the real trace's decline instead removes that artificial
-% imbalance: peak at t=0.1 (near calcium engagement), easing back to 85%
-% of peak by t=0.2 (near where the true ES minimum has been landing in
-% the trajectory data), then held at that reduced level as a safety
-% margin in case the run extends slightly past t=0.2.
-% RETIMED (early rise): the straight line from (0.01, 0.0583) to
-% (0.1, 1.0) outran calcium badly -- at t=0.024, calcium has barely
-% engaged (ascl~=0.08, so active tension is near zero) but linear
-% interpolation already has pressure at ~20% of peak. That's a window of
-% essentially unopposed inflation, which is the "blows up before
-% contraction" behavior observed. Added intermediate points so pressure's
-% early rise tracks calcium's own timing more closely (staying low while
-% calcium is still low, then catching up to peak by t=0.1), instead of a
-% straight line racing ahead of it. Calcium reference values: t=0.044
-% ascl=0.44, t=0.064 ascl=0.81, t=0.084 ascl=0.98.
-% LV: ED/systolic = 5.83/100.0 = 0.0583.
 febio_spec.LoadData.load_controller{1}.ATTR.name       = 'LC_pressure';
 febio_spec.LoadData.load_controller{1}.ATTR.id         = 1;
 febio_spec.LoadData.load_controller{1}.ATTR.type       = 'loadcurve';
@@ -621,10 +377,7 @@ febio_spec.LoadData.load_controller{1}.points.pt.VAL   = [
     0.2000   0.8500;   % gentle decline through ejection, matching Fig. 2a shape
     8.4500   0.8500;   % held at reduced level (no relaxation leg modeled here)
 ];
-% LC 3: RV's own ED->systolic ramp (RV: ED/systolic = 1.49/21.9 = 0.0680,
-% close to but not identical to LV's fraction -- separate curve so each
-% chamber's ramp is exact rather than sharing an averaged approximation).
-% Same retimed, peak-then-decline profile as LV.
+% LC 3: RV's own ED->systolic ramp 
 febio_spec.LoadData.load_controller{3}.ATTR.name       = 'LC_pressure_RV';
 febio_spec.LoadData.load_controller{3}.ATTR.id         = 3;
 febio_spec.LoadData.load_controller{3}.ATTR.type       = 'loadcurve';
@@ -639,22 +392,7 @@ febio_spec.LoadData.load_controller{3}.points.pt.VAL   = [
     8.4500   0.8500;   % held at reduced level (no relaxation leg modeled here)
 ];
 % LC 2: calcium activation curve -- built directly from real Ca2+
-% transient data (fura-2-style fluorescence ratio, OVX SuHx group, n=12
-% rats, averaged) provided from the user's own lab, replacing the
-% earlier literature Guccione & McCulloch Fig.1 approximation. Extracted
-% from "[Ca] OVX SuHx group (All rats).txt" ("OVXSUHX Average" column,
-% sampled every 4ms):
-%   - diastolic baseline  ~0.939318 (minimum, at real t=0.096 s)
-%   - peak                ~1.289958 (at real t=0.192 s)
-%   - amplitude            0.350640 (peak - baseline)
-% Points below are (real_t - 0.096) for time (onset = sim-time 0, same
-% convention as the rest of this script) and (value-baseline)/amplitude
-% for ascl. Rise is ~96ms (close to the Guccione 100ms value), but decay
-% is much slower -- ~768ms vs. Guccione's 500ms -- which may reflect
-% real SuHx-model impaired calcium reuptake (a disease-relevant feature,
-% not noise, so it's kept rather than smoothed away). ascl = Ca(t)/Ca0,
-% i.e. C(t) in the FEBio theory manual's Eq. 5.10.2, not raw uM/ratio
-% units.
+% transient data 
 febio_spec.LoadData.load_controller{2}.ATTR.name       = 'LC_calcium';
 febio_spec.LoadData.load_controller{2}.ATTR.id         = 2;
 febio_spec.LoadData.load_controller{2}.ATTR.type       = 'loadcurve';
