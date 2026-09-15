@@ -62,29 +62,16 @@ k_mat     = 2000;
 %   l0     = 1.60 um   (sarcomere length at zero active tension, validated)
 %   refl   = 1.85 um   (reference sarcomere length, validated)
 %   ascl   = driven by load curve 2 (calcium activation curve)
-%
-%   STATUS: these MATLAB variables ARE live and sent to FEBio (the earlier
-%   LoBeta/HiBeta hardcoded-constants workaround was abandoned once the
-%   real crash cause -- stale builds, not a genuine parameter limit --
-%   was found; see conversation notes). Change values here directly.
-%
-%   Tmax = 98 kPa: empirically established as the maximum stable value
-%   for this model before large-scale negative jacobians occur. 135.7 kPa
-%   (FEBio theory manual's worked-example peak isometric tension) was
-%   tried as an independent literature value but was NOT what was
-%   actually tested -- reverting to the confirmed-stable 98 kPa here.
-% Diagnostic round 2 resolved (see simDuration comment above) -- back to
-% the confirmed-stable real value.
 Tmax  = 136;
 Ca0   = 4.35;
 B_LV  = 4.75;
-B_RV  = 11.0;
+B_RV  = 11;
 B_S   = 4.75;
 l0    = 1.8;
 refl  = 2.20;
 
 %% ---- Pressure (mmHg -> kPa) ----
-Pressure_LVRV = [100.0  21.9];   % [LV, RV] mmHg, END-SYSTOLIC
+Pressure_LVRV = [91  21.9];   % [LV, RV] mmHg, END-SYSTOLIC
 P_LV = Pressure_LVRV(1) * 0.133;
 P_RV = Pressure_LVRV(2) * 0.133;
 
@@ -341,29 +328,7 @@ febio_spec.Loads.surface_load{2}.pressure.VAL       = P_RV * pressureScale;
 febio_spec.Loads.surface_load{2}.symmetric_stiffness = 0;
 
 %% ---- Load curves ----
-% LC_pressure and LC_calcium are now DECOUPLED, and intentionally
-% represent two different physical quantities:
-%   - LC_calcium drives the material's internal active-tension state
-%     (ascl -> Ta via the Hill/calcium model in the plugin). Its shape
-%     SHOULD follow real calcium kinetics -- fast rise, slower decay --
-%     because that's what it physically is: an intracellular
-%     concentration transient. Originally approximated from the classic
-%     Guccione & McCulloch (1993) Fig. 1 curve; now built directly from
-%     real OVX SuHx group Ca2+ transient data from the user's own lab
-%     (peak at ~96ms, decaying over ~768ms -- see the curve definition
-%     below for details and sourcing).
-%   - LC_pressure is an externally applied mechanical boundary condition
-%     (cavity pressure). Physiologically it does NOT track calcium
-%     kinetics -- it follows the pressure-volume loop: a rise during
-%     isovolumic contraction, a plateau through ejection, and a fall
-%     during isovolumic relaxation back to baseline, roughly SYMMETRIC in
-%     time (unlike calcium's fast-rise/slow-decay asymmetry). Making
-%     pressure literally copy the calcium curve's shape (as an earlier
-%     version of this script did, to fix a "collapse" instability) was
-%     not anatomically correct -- it's what produced the "quickly
-%     contracts, then slowly expands" behavior, since pressure was
-%     fading out on calcium's slow 500ms decay tail instead of its own,
-%     faster relaxation-phase timing.
+% LV: ED/systolic = 5.83/100.0 = 0.0583.
 febio_spec.LoadData.load_controller{1}.ATTR.name       = 'LC_pressure';
 febio_spec.LoadData.load_controller{1}.ATTR.id         = 1;
 febio_spec.LoadData.load_controller{1}.ATTR.type       = 'loadcurve';
@@ -391,8 +356,7 @@ febio_spec.LoadData.load_controller{3}.points.pt.VAL   = [
     0.2000   0.8500;   % gentle decline through ejection, matching Fig. 2a shape
     8.4500   0.8500;   % held at reduced level (no relaxation leg modeled here)
 ];
-% LC 2: calcium activation curve -- built directly from real Ca2+
-% transient data 
+% LC 2: calcium activation curve -- built directly from real Ca2+ transient data 
 febio_spec.LoadData.load_controller{2}.ATTR.name       = 'LC_calcium';
 febio_spec.LoadData.load_controller{2}.ATTR.id         = 2;
 febio_spec.LoadData.load_controller{2}.ATTR.type       = 'loadcurve';
@@ -439,11 +403,6 @@ outDir = fileparts(febioFebFileName);
 [~,base,~] = fileparts(char(febioFebFileName));
 
 % Run FEBio DIRECTLY via system(), bypassing runMonitorFEBio entirely.
-% GIBBON's wrapper manages FEBio's execution/monitoring internally and
-% does not reliably honor a custom "-o" flag appended to run_string --
-% confirmed by the console log file never being created. Calling system()
-% ourselves captures FEBio's full console output directly into a MATLAB
-% string (cmdout), with no file-based indirection that can silently fail.
 runCmd = sprintf('"%s" -i "%s"', char(febioExe), char(febioFebFileName));
 fprintf('Running: %s\n', runCmd);
 fprintf('(Live FEBio output will stream below; full text is also captured for the diagnostic.)\n\n');
@@ -541,12 +500,6 @@ if runFlag == 1
         Vol_RV_ED, Vol_RV_ES, k_RV, SV_RV, SV_RV/Vol_RV_ED*100);
 
     %% ---- Volume-vs-step trajectory: print table + plot ----
-    % Added to diagnose the DIAGNOSTIC TEST (round 2) overshoot: the
-    % full-pressure endpoint significantly overshot the true ED target
-    % (from V_MRI_ED) for both chambers, and the negative-jacobian burst
-    % at step 7 (313 events) is a candidate cause. This shows the actual
-    % volume trajectory step-by-step so we can see whether it's a smooth
-    % overshoot or an abrupt jump right around the failed steps.
     if isfield(dataDisp, 'time') && numel(dataDisp.time) == nSteps
         stepTimes = dataDisp.time(:);
     else
